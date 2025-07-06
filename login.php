@@ -1,11 +1,27 @@
 <?php
 include_once "session.inc";
+include_once "rate_limit.inc";
+include_once "security.inc";
 
 if (!isset($_SESSION['sm61loggedin'])) {
     $_SESSION['sm61loggedin'] = false;
 }
 
 define('HTPASSWD_FILE', '.htpasswd');
+
+// Check rate limiting for login attempts
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (is_rate_limited('login', 5, 900)) { // 5 attempts per 15 minutes
+        http_response_code(429);
+        if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => 'Too many login attempts. Please wait 15 minutes before trying again.']);
+        } else {
+            die("Too many login attempts. Please wait 15 minutes before trying again.");
+        }
+        exit;
+    }
+}
 
 function http_authenticate(string $user, string $pass, string $pass_file = HTPASSWD_FILE): bool {
     if (!file_exists($pass_file) || !is_readable($pass_file)) {
@@ -89,27 +105,184 @@ function logUser(string $user, bool $success): void {
     }
 }
 
-$user = $_POST['user'] ?? '';
-$passwd = $_POST['passwd'] ?? '';
+// Handle login form submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $user = $_POST['user'] ?? '';
+    $passwd = $_POST['passwd'] ?? '';
+    $is_ajax = isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest';
+    
+    // Basic input validation
+    if (empty($user) || empty($passwd)) {
+        $error_message = "Username and password are required.";
+        if ($is_ajax) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'message' => $error_message]);
+            exit;
+        }
+    } else {
+        if (http_authenticate($user, $passwd)) {
+            // Clear rate limit on successful login
+            clear_rate_limit('login');
+            
+            if (function_exists('session_regenerate_id')) {
+                session_regenerate_id(true);
+            }
+            
+            $_SESSION['sm61loggedin'] = true;
+            $_SESSION['user'] = $user;
+            $_SESSION['login_time'] = time();
 
-if (http_authenticate($user, $passwd)) {
-    if (function_exists('session_regenerate_id')) {
-        session_regenerate_id(true);
+            logUser($user, true);
+
+            if ($is_ajax) {
+                // Return JSON response for AJAX requests
+                header('Content-Type: application/json');
+                echo json_encode(['success' => true, 'message' => 'Login successful', 'user' => $user]);
+            } else {
+                // For form submissions, redirect to main page
+                header('Location: index.php');
+                exit;
+            }
+            exit;
+        } else {
+            logUser($user, false);
+            $remaining_attempts = get_remaining_attempts('login', 5, 900);
+            $error_message = "Login failed. Remaining attempts: {$remaining_attempts}";
+            
+            if ($is_ajax) {
+                header('Content-Type: application/json');
+                echo json_encode(['success' => false, 'message' => $error_message]);
+                exit;
+            }
+        }
+    }
+}
+
+// Include header for consistent styling
+include "header.inc";
+?>
+
+<style>
+.login-page {
+    max-width: 400px;
+    margin: 50px auto;
+    background: var(--container-bg);
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+    border: 1px solid var(--border-color);
+}
+
+.login-title {
+    text-align: center;
+    margin-bottom: 30px;
+    color: var(--text-color);
+    font-size: 1.5em;
+    font-weight: bold;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text-color);
+    font-weight: bold;
+}
+
+.form-group input[type="text"],
+.form-group input[type="password"] {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    box-sizing: border-box;
+    background: var(--input-bg);
+    color: var(--input-text);
+    font-size: 16px;
+}
+
+.form-group input[type="text"]:focus,
+.form-group input[type="password"]:focus {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+.login-btn {
+    width: 100%;
+    padding: 12px;
+    background: var(--primary-color);
+    color: var(--text-color);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+    transition: background-color 0.3s ease;
+}
+
+.login-btn:hover {
+    background: var(--link-hover);
+}
+
+.login-error {
+    color: var(--error-color);
+    background: rgba(211, 47, 47, 0.1);
+    padding: 10px;
+    border-radius: 4px;
+    margin-bottom: 20px;
+    border: 1px solid var(--error-color);
+}
+
+.login-attempts {
+    color: var(--text-color);
+    font-size: 14px;
+    text-align: center;
+    margin-top: 10px;
+    opacity: 0.8;
+}
+
+@media (max-width: 768px) {
+    .login-page {
+        margin: 20px auto;
+        padding: 20px;
     }
     
-    $_SESSION['sm61loggedin'] = true;
-    $_SESSION['user'] = $user;
-
-    logUser($user, true);
-
-    $current_script_url = basename($_SERVER['REQUEST_URI'] ?? '');
-    $redirect_url = urldecode($current_script_url); 
-
-    echo "Login succeeded. Redirecting...";
-    echo "<meta http-equiv='REFRESH' content='0;url=" . htmlspecialchars($redirect_url, ENT_QUOTES, 'UTF-8') . "'>";
-    
-} else {
-    logUser($user, false);
-    echo "Sorry, login failed."; 
+    .login-title {
+        font-size: 1.3em;
+    }
 }
-?>
+</style>
+
+<div class="login-page">
+    <h2 class="login-title">Supermon-ng Login</h2>
+    
+    <?php if (isset($error_message)): ?>
+        <div class="login-error"><?php echo htmlspecialchars($error_message, ENT_QUOTES, 'UTF-8'); ?></div>
+    <?php endif; ?>
+    
+    <form method="post" action="">
+        <div class="form-group">
+            <label for="user">Username:</label>
+            <input type="text" id="user" name="user" required>
+        </div>
+        
+        <div class="form-group">
+            <label for="passwd">Password:</label>
+            <input type="password" id="passwd" name="passwd" required>
+        </div>
+        
+        <button type="submit" class="login-btn">Login</button>
+    </form>
+    
+    <div class="login-attempts">
+        <?php 
+        $remaining = get_remaining_attempts('login', 5, 900);
+        echo "Remaining login attempts: {$remaining}";
+        ?>
+    </div>
+</div>
+
+<?php include "footer.inc"; ?>

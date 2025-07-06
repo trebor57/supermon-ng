@@ -1,4 +1,5 @@
 <?php
+@set_time_limit(0);
 session_name("supermon61");
 if (session_status() == PHP_SESSION_NONE) {
     session_start();
@@ -222,6 +223,13 @@ while (TRUE) {
         $active_nodes_in_loop++;
 
         $hostFp = $fp[$nodeConfig['host']];
+        
+        // Check if socket is still valid and healthy before using it
+        if (!isConnectionHealthy($hostFp)) {
+            error_log("Main loop: Socket for node $node is not healthy, skipping");
+            continue;
+        }
+        
         $astInfo = getAstInfo($hostFp, $node);
 
         $currentIterationData[$node]['node'] = $node;
@@ -326,7 +334,45 @@ foreach ($fp as $host => $socket) {
 }
 exit;
 
+function isConnectionHealthy($fp) {
+    if (!is_resource($fp) || get_resource_type($fp) !== 'stream') {
+        return false;
+    }
+    
+    $socketStatus = stream_get_meta_data($fp);
+    if ($socketStatus['eof'] || $socketStatus['timed_out']) {
+        return false;
+    }
+    
+    // Test with a simple ping command
+    $testCommand = "Action: Ping\r\nActionID: health" . mt_rand() . "\r\n\r\n";
+    $testResult = @fwrite($fp, $testCommand);
+    if ($testResult === false) {
+        $error = error_get_last();
+        if (($error['errno'] ?? 0) === 32) { // Broken pipe
+            return false;
+        }
+    }
+    
+    return true;
+}
+
 function getNode($fp, $node) {
+    // Check if socket is still valid
+    if (!is_resource($fp) || get_resource_type($fp) !== 'stream') {
+        error_log("getNode: Socket is not a valid resource for node $node");
+        return parseNode($fp, $node, '', '');
+    }
+    
+    // Check socket status
+    $socketStatus = stream_get_meta_data($fp);
+    if ($socketStatus['eof'] || $socketStatus['timed_out']) {
+        error_log("getNode: Socket is EOF or timed out for node $node");
+        return parseNode($fp, $node, '', '');
+    }
+    
+
+    
     $actionRand = mt_rand();
     $rptStatus = '';
     $sawStatus = '';
@@ -334,27 +380,50 @@ function getNode($fp, $node) {
 
     $actionID_xstat = 'xstat' . $actionRand;
     $xstatCommand = "Action: RptStatus{$eol}COMMAND: XStat{$eol}NODE: {$node}{$eol}ActionID: {$actionID_xstat}{$eol}{$eol}";
-    if (fwrite($fp, $xstatCommand)) {
-        $rptStatus = SimpleAmiClient::getResponse($fp, $actionID_xstat);
-        if ($rptStatus === false) {
-             error_log("getNode: XStat SimpleAmiClient::getResponse FAILED or timed out for node $node, actionID $actionID_xstat");
-             $rptStatus = '';
+    
+    $xstatBytesWritten = @fwrite($fp, $xstatCommand);
+    if ($xstatBytesWritten === false || $xstatBytesWritten === 0) {
+        $error = error_get_last();
+        $errno = $error['errno'] ?? 0;
+        $errstr = $error['errstr'] ?? 'Unknown error';
+        
+        if ($errno === 32) { // Broken pipe
+            error_log("getNode: XStat fwrite FAILED for node $node - BROKEN PIPE (errno=32)");
+        } else {
+            error_log("getNode: XStat fwrite FAILED for node $node - bytes written: " . ($xstatBytesWritten === false ? 'false' : $xstatBytesWritten) . ", errno: $errno, error: $errstr");
         }
-    } else {
-        error_log("getNode: XStat fwrite FAILED for node $node");
+        return parseNode($fp, $node, '', '');
+    }
+    
+    $rptStatus = SimpleAmiClient::getResponse($fp, $actionID_xstat);
+    if ($rptStatus === false) {
+         error_log("getNode: XStat SimpleAmiClient::getResponse FAILED or timed out for node $node, actionID $actionID_xstat");
+         $rptStatus = '';
     }
 
     $actionID_sawstat = 'sawstat' . $actionRand;
     $sawStatCommand = "Action: RptStatus{$eol}COMMAND: SawStat{$eol}NODE: {$node}{$eol}ActionID: {$actionID_sawstat}{$eol}{$eol}";
-    if (fwrite($fp, $sawStatCommand)) {
-        $sawStatus = SimpleAmiClient::getResponse($fp, $actionID_sawstat);
-        if ($sawStatus === false) {
-            error_log("getNode: SawStat SimpleAmiClient::getResponse FAILED or timed out for node $node, actionID $actionID_sawstat");
-            $sawStatus = '';
+    
+    $sawStatBytesWritten = @fwrite($fp, $sawStatCommand);
+    if ($sawStatBytesWritten === false || $sawStatBytesWritten === 0) {
+        $error = error_get_last();
+        $errno = $error['errno'] ?? 0;
+        $errstr = $error['errstr'] ?? 'Unknown error';
+        
+        if ($errno === 32) { // Broken pipe
+            error_log("getNode: SawStat fwrite FAILED for node $node - BROKEN PIPE (errno=32)");
+        } else {
+            error_log("getNode: SawStat fwrite FAILED for node $node - bytes written: " . ($sawStatBytesWritten === false ? 'false' : $sawStatBytesWritten) . ", errno: $errno, error: $errstr");
         }
-    } else {
-        error_log("getNode: SawStat fwrite FAILED for node $node");
+        return parseNode($fp, $node, $rptStatus, '');
     }
+    
+    $sawStatus = SimpleAmiClient::getResponse($fp, $actionID_sawstat);
+    if ($sawStatus === false) {
+        error_log("getNode: SawStat SimpleAmiClient::getResponse FAILED or timed out for node $node, actionID $actionID_sawstat");
+        $sawStatus = '';
+    }
+    
     return parseNode($fp, $node, $rptStatus, $sawStatus);
 }
 

@@ -1,6 +1,7 @@
 <?php
 include("user_files/global.inc");
 include("common.inc");
+include("csrf.inc");
 
 if (!isset($SHOWPW)) {
 	$SHOWPW = true;
@@ -36,6 +37,10 @@ if (isset($_COOKIE['display-data'])) {
     }
 }
 
+if (!isset($_SESSION['sm61loggedin'])) {
+    $_SESSION['sm61loggedin'] = false;
+}
+
 $uri_path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
 $uri = urldecode(basename($uri_path));
 
@@ -47,6 +52,8 @@ if (!empty($SMSERVERNAME)) {
 
 if (preg_match("/voter\.php\?node=(\d+)$/", $_SERVER['REQUEST_URI'], $matches)) {
     $pageTitle .= "RTCM " . $matches[1];
+} elseif (preg_match("/index\.php\?nodes=(.+)$/", $_SERVER['REQUEST_URI'], $matches)) {
+    $pageTitle .= $matches[1];
 } elseif (preg_match("/link\.php\?nodes=(.+)$/", $_SERVER['REQUEST_URI'], $matches)) {
     $pageTitle .= $matches[1];
 } elseif (strpos($uri, "about") !== false) {
@@ -56,12 +63,30 @@ if (preg_match("/voter\.php\?node=(\d+)$/", $_SERVER['REQUEST_URI'], $matches)) 
 $script_dir = dirname($_SERVER['SCRIPT_NAME']);
 $home = ($script_dir == '/' || $script_dir == '\\') ? '/' : $script_dir;
 
+// Set essential security headers
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('X-XSS-Protection: 1; mode=block');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
+
+// Content Security Policy
+$csp = "default-src 'self'; " .
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " .
+        "style-src 'self' 'unsafe-inline'; " .
+        "img-src 'self' data:; " .
+        "font-src 'self'; " .
+        "connect-src 'self'; " .
+        "frame-ancestors 'none';";
+header("Content-Security-Policy: " . $csp);
+
 ?>
 <!DOCTYPE html>
 <html>
 <head>
 <title><?php echo htmlspecialchars($pageTitle); ?></title>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+
 <meta name="generator" content="By hand with vi text editor">
 <meta name="description" content="AllStar node manager">
 <meta name="keywords" content="allstar monitor, app_rpt, asterisk">
@@ -74,239 +99,66 @@ $home = ($script_dir == '/' || $script_dir == '\\') ? '/' : $script_dir;
 <link type="text/css" rel="stylesheet" href="js/jquery-ui.css">
 <script src="js/jquery.min.js"></script>
 <script src="js/jquery-ui.min.js"></script>
-<script src="js/alertify.min.js"></script>
-<link rel="stylesheet" href="js/alertify.core.css"/>
-<link rel="stylesheet" href="js/alertify.default.css" id="toggleCSS"/>
+<script src="js/sweetalert2.min.js"></script>
+<link rel="stylesheet" href="js/sweetalert2.min.css"/>
 
+<!-- Modern JavaScript will handle login functionality -->
 <script type="text/javascript">
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
+// Add logout functionality with PHP variable access
 $(document).ready(function() {
-
-<?php if ($_SESSION['sm61loggedin'] === true) { ?>
-    $("#loginlink").hide();
-<?php } else { ?>
-    $('#connect_form').hide();
-    $('#logoutlink').hide();
-<?php } ?>
-
-<?php if ($_SESSION['sm61loggedin'] === true) { ?>
-
-    $('#logoutlink').click(function(event) {
+    $('#logoutlink').on('click', function(event) {
         event.preventDefault();
-        var user = <?php echo json_encode($_SESSION['user']); ?>;
-        alertify.success("<p style=\"font-size:28px;\"><b>Goodbye " + user + "!</b></p>");
+        var user = <?php echo json_encode($_SESSION['user'] ?? ''); ?>;
+        
+        if (typeof alertify !== 'undefined') {
+            alertify.success("<p style=\"font-size:28px;\"><b>Goodbye " + user + "!</b></p>");
+        } else {
+            alert("Goodbye " + user + "!");
+        }
+        
         $.post("logout.php", "", function(response) {
             if (response.substr(0,5) != 'Sorry') {
-                sleep(2000).then(() => { window.location.reload(); });
+                setTimeout(function() {
+                    window.location.reload();
+                }, 2000);
             }
         });
-    });
-
-    function openPopupWindow(event, templateUrl, windowNameTemplate, width, height, checkNodeField = false, errorMessage = '', moveToTop = true) {
-        event.preventDefault();
-        const localNode = $('#localnode').val();
-        const nodeInput = $('#node').val();
-        const perm = $('input:checkbox:checked').val() || '';
-
-        if (checkNodeField && nodeInput.length === 0) {
-            alertify.error(errorMessage.replace('{localnode}', localNode).replace('{node}', nodeInput));
-            return;
-        }
-
-        const url = templateUrl.replace('{localnode}', localNode).replace('{node}', nodeInput).replace('{perm}', perm);
-        const windowName = windowNameTemplate.replace('{localnode}', localNode);
-        const windowSize = `height=${height},width=${width}`;
-        
-        const newWindow = window.open(url, windowName, windowSize);
-        if (newWindow && moveToTop) {
-            newWindow.moveTo(20, 20);
-        }
-    }
-
-    function confirmAndAjax(confirmMsgTemplate, ajaxUrl, dataBuilder, successHandler, errorHandlerMsg) {
-        const localNode = $('#localnode').val();
-        const nodeInput = $('#node').val();
-        const buttonId = $(this).attr('id');
-
-        const confirmMessage = confirmMsgTemplate
-            .replace('{localnode}', localNode)
-            .replace('{node}', nodeInput);
-
-        alertify.confirm(confirmMessage, function(e) {
-            if (e) {
-                const ajaxData = dataBuilder(nodeInput, localNode, buttonId);
-                $.ajax({
-                    url: ajaxUrl,
-                    data: ajaxData,
-                    type: 'post',
-                    success: function(result) {
-                        if (typeof successHandler === 'function') {
-                            successHandler(result);
-                        } else {
-                            alertify.success(result);
-                        }
-                    }
-                });
-            } else {
-                if (errorHandlerMsg) alertify.error(errorHandlerMsg);
-            }
-        });
-    }
-
-    $('#connect, #monitor, #permanent, #localmonitor').click(function() {
-        var button = this.id;
-        var localNode = $('#localnode').val();
-        var remoteNode = $('#node').val(); 
-        var perm = $('input:checkbox:checked').val() || '';
-        
-        if (remoteNode.length == 0) {
-            alertify.error('Please enter the remote node number you want node ' + localNode + ' to connect with.');
-            return;
-        }
-        $.ajax({
-            url:'connect.php',
-            data: { 'remotenode': remoteNode, 'perm': perm, 'button': button, 'localnode': localNode },
-            type:'post',
-            success: function(result) { alertify.success(result); }
-        });
-    });
-
-    $('#disconnect').click(function() {
-        var button = this.id;
-        var localNode = $('#localnode').val();
-        var remoteNode = $('#node').val();
-        var perm = $('input:checkbox:checked').val() || '';
-
-        if (remoteNode.length == 0) {
-            alertify.error('Please enter the remote node number you want node ' + localNode + ' to disconnect from.');
-            return;
-        }
-        alertify.confirm("Disconnect " + remoteNode + " from " + localNode + "?", function (e) {
-            if (e) {
-                $.ajax({
-                    url:'disconnect.php',
-                    data: { 'remotenode': remoteNode, 'perm': perm, 'button': button, 'localnode': localNode },
-                    type:'post',
-                    success: function(result) { alertify.success(result); }
-                });
-            }
-        });
-    });
-    
-    const popups = {
-        '#controlpanel': ["controlpanel.php?node={localnode}", "ControlPanel{localnode}", 1000, 560],
-        '#favoritespanel': ["favorites.php?node={localnode}", "FavoritesPanel{localnode}", 800, 500],
-        '#astlog': ["astlog.php", "AsteriskLog{localnode}", 1300, 560],
-        '#stats': ["stats.php?node={localnode}", "AllStarStatistics{localnode}", 1400, 560],
-        '#cpustats': ["cpustats.php", "CPUstatistics{localnode}", 1000, 760],
-        '#database': ["database.php?node={node}&localnode={localnode}", "Database{localnode}", 950, 560],
-        '#rptstats': ["rptstats.php?node={node}&localnode={localnode}", "RptStatistics{localnode}", 900, 800],
-        '#astlookup': ["astlookup.php?node={node}&localnode={localnode}&perm={perm}", "AstLookup{localnode}", 1000, 500, true, 'Please enter a Callsign or Node number to look up on node {localnode}.'],
-        '#astnodes': ["astnodes.php", "AstNodes{localnode}", 750, 560],
-        '#extnodes': ["extnodes.php", "ExtNodes{localnode}", 850, 560],
-        '#linuxlog': ["linuxlog.php", "LinuxLog{localnode}", 1300, 560],
-        '#irlplog': ["irlplog.php", "IRLPLog{localnode}", 1100, 560],
-        '#webacclog': ["webacclog.php", "WebAccessLog{localnode}", 1400, 560],
-        '#weberrlog': ["weberrlog.php", "WebErrorLog{localnode}", 1400, 560],
-        '#openpigpio': ["pi-gpio.php", "Pi-GPIO{localnode}", 900, 900],
-        '#openbanallow': ["node-ban-allow.php?node={node}&localnode={localnode}", "Ban-Allow{localnode}", 1050, 700],
-        '#smlog': ["smlog.php", "SMLog{localnode}", 1200, 560]
-    };
-
-    $.each(popups, function(selector, params) {
-        $(selector).click(function(event) {
-            openPopupWindow.call(this, event, ...params); 
-        });
-    });
-
-    $('#astreload').click(function() {
-        confirmAndAjax.call(this, "Execute the Asterisk \"iax2, rpt, & extensions Reload\" for node - {localnode}", 'ast_reload.php',
-            function(nodeInput, localnode, buttonId) { return { 'node': nodeInput, 'localnode': localnode, 'button': buttonId }; },
-            null,
-            "No reload performed"
-        );
-    });
-    
-    $('#reboot').click(function() {
-        confirmAndAjax.call(this, "Perform a full Reboot of the AllStar server?<br><br>You can only Reboot the main server from Supermon-ng not remote servers", 'reboot.php',
-            function(nodeInput, localnode, buttonId) { return { 'node': nodeInput, 'button': buttonId }; },
-            null, 
-            "NO Reboot performed"
-        );
-    });
-
-    $('#fastrestart').click(function() {
-        confirmAndAjax.call(this, "Perform a Fast-Restart of the AllStar system software at node {localnode}?", 'fastrestart.php',
-            function(nodeInput, localnode, buttonId) { return { 'button': buttonId, 'localnode': localnode }; },
-            null, 
-            "NO action performed"
-        );
-    });
-
-    $('#astaroff, #astaron').click(function() {
-        var button = this.id;
-        var confirmMsg = (button == 'astaroff') ? 
-            "Perform Shutdown of AllStar system software?" : 
-            "Perform Startup of AllStar system software?";
-        
-        alertify.confirm(confirmMsg, function(e) {
-            if (e) {
-                $.ajax({
-                    url: 'astaronoff.php', data: { 'button': button }, type: 'post',
-                    success: function(result) { alertify.success(result); }
-                });
-            } else {
-                alertify.error("NO Action performed");
-            }
-        });
-    });
-
-    $('#dtmf').click(function() {
-        var localnode = $('#localnode').val();
-        var dtmf_command = $('#node').val();
-
-        if (dtmf_command.length == 0) {
-            alertify.error("Please enter a DTMF command to execute on node " + localnode + '.');
-            return;
-        }
-        $.ajax({
-            url:'dtmf.php',
-            data: { 'node': dtmf_command, 'button': this.id, 'localnode': localnode },
-            type:'post',
-            success: function(result) { alertify.success(result); }
-        });
-    });
-
-    $('#map').click(function() {
-        var nodeInput = $('#node').val();
-        var localnode = $('#localnode').val();
-        $.ajax({
-            url:'bubblechart.php',
-            data: { 'node': nodeInput, 'localnode': localnode, 'button': this.id },
-            type:'post',
-            success: function(result) {
-                $('#test_area').html(result).stop().css('opacity', 1).fadeIn(50).delay(1000).fadeOut(2000);
-            }
-        });
-    });
-
-<?php } ?>
-
-    $('table').on('click', 'td.nodeNum', function() {
-        $('#connect_form #node').val($(this).text());
-        var tableId = $(this).closest('table').attr('id');
-        if (tableId) {
-            var idarr = tableId.split('_');
-            if (idarr.length > 1) {
-                 $('#connect_form #localnode').val(idarr[1]);
-            }
-        }
     });
 });
 </script>
+
+<!-- Load modern CSS -->
+<!-- Temporarily disabled to preserve original table and button styling -->
+<!-- <link rel="stylesheet" href="js/modern-styles.css"/> -->
+
+<!-- Load JavaScript files -->
+<script src="js/sweetalert2-config.js"></script>
+<script src="js/utils.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/app.js"></script>
+<script src="js/modern-header.js"></script>
+
+<!-- PWA Manifest -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#007bff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Supermon-ng">
+<link rel="apple-touch-icon" href="/favicon.ico">
+
+<?php
+// Set header title variables for JavaScript
+echo "<script>\n";
+echo "var headerTitle = " . json_encode($TITLE_LOGGED ?? 'Supermon-ng') . ";\n";
+echo "var headerTitle2 = " . json_encode($TITLE2 ?? '') . ";\n";
+echo "var headerTitle3 = " . json_encode($TITLE3 ?? '') . ";\n";
+echo "var csrfToken = " . json_encode(generate_csrf_token()) . ";\n";
+echo "var supermonConfig = {\n";
+echo "    isLoggedIn: " . json_encode($_SESSION['sm61loggedin'] ?? false) . ",\n";
+echo "    currentUser: " . json_encode($_SESSION['user'] ?? '') . "\n";
+echo "};\n";
+echo "</script>\n";
+?>
 </head>
 
 <body style="width: 100%; max-width: 880px; margin: auto; <?php echo isset($DISPLAY_BACKGROUND) ? "background-color:$DISPLAY_BACKGROUND;" : ""; ?>">
@@ -346,15 +198,17 @@ if ($_SESSION['sm61loggedin'] === true) {
 }
 ?>
 
+<?php if ($_SESSION['sm61loggedin'] === true): ?>
 <div id="headerLogout">
     <div id="headerLogout2">
         <a href="#" id="logoutlink">Logout <?php echo htmlspecialchars($_SESSION["user"]); ?></span></a>
     </div>
 </div>
-
+<?php else: ?>
 <div id="headerLogin">
     <a href="#" id="loginlink">Login</a>  
 </div>
+<?php endif; ?>
 
 <div id="headerImg"><a href="https://www.allstarlink.org" target="_blank"><img src="allstarlink.jpg" width="70%" style="border: 0px;" alt="Allstar Logo"></a></div>
 
@@ -378,96 +232,22 @@ if (isset($LOGO_NAME, $LOGO_SIZE, $LOGO_POSITION_RIGHT, $LOGO_POSITION_TOP)) {
 <div style="display:none;" id="login">
     <form id="myform" action="" method="post">
         <fieldset> 
-            <label class="exit" style="float:right;clear:both;"><input type="radio" onclick="hideLoginUi()"/><span><b>X</b></span></label>
+            <label class="exit" style="float:right;clear:both;"><input type="radio" id="close_login" name="close_login" onclick="hideLoginUi()"/><span><b>X</b></span></label>
             <p style="font-size:1.5em;color:white;margin-top:1em;margin-bottom:0.1em;text-align:center;"><b>Supermon-ng</b></p>
             <p style="font-size:1.2em;color:white;margin-top:0;margin-bottom:.5em;text-align:center;"><b>Manager Log in</b></p>
-            <input style="font-weight:bold;margin-bottom:.5em;" type="text" id="user" placeholder="Username" autocapitalize="none" required size="10">
+            <input style="font-weight:bold;margin-bottom:.5em;" type="text" id="user" name="user" placeholder="Username" autocapitalize="none" required size="10">
             <br>
-            <input style="font-weight:bold;" type="password" id="passwd" placeholder="Password" required size="10">
+            <input style="font-weight:bold;" type="password" id="passwd" name="passwd" placeholder="Password" required size="10">
             <br>
             <?php if ($SHOWPW): ?>
-                <label style="font-weight:bold;color:white;"><input style="margin-top:1em;" id="checkbox" type="checkbox" onclick="togglePasswordVisibility()">Show Password</label>
+                <label style="font-weight:bold;color:white;"><input style="margin-top:1em;" id="checkbox" name="show_password" type="checkbox" onclick="togglePasswordVisibility()">Show Password</label>
             <?php endif; ?>
             <br>
-            <label style="font-weight:bold;color:white;"><input type="checkbox" style="font-weight:bold;margin-top:.5em;" onclick="clearLoginForm()">Clear</label>
-            <input class="login" style="font-weight:bold;float:right;clear:both;margin-top:.5em;" type="submit" name="submit" value="submit" onclick="return validateCredentials()">
+            <label style="font-weight:bold;color:white;"><input type="checkbox" name="clear_form" style="font-weight:bold;margin-top:.5em;" onclick="clearLoginForm()">Clear</label>
+            <input class="login" style="font-weight:bold;float:right;clear:both;margin-top:.5em;" type="submit" name="submit" value="submit">
         </fieldset>
     </form>
 </div>
-
-<script>
-function clearLoginForm() {
-    document.getElementById('myform').reset();
-    const pwCheckbox = document.getElementById("checkbox");
-    if (pwCheckbox) pwCheckbox.checked = false;
-    const passwdField = document.getElementById("passwd");
-    if (passwdField) passwdField.type = "password";
-}
-
-function togglePasswordVisibility() {
-    var pwField = document.getElementById("passwd");
-    var userField = document.getElementById("user");
-    var showPwCheckbox = document.getElementById("checkbox");
-
-    if (userField.value) {
-        if (pwField.type === "password") {
-            pwField.type = "text";
-            showPwCheckbox.checked = true;
-        } else {
-            pwField.type = "password";
-            showPwCheckbox.checked = false;
-        }
-    } else {
-        showPwCheckbox.checked = false;
-        pwField.type = "password";
-    }
-}
-
-function hideLoginUi() {
-    document.getElementById("login").style.display = "none";
-}
-
-function showLoginUi() {
-    document.getElementById("login").style.display = "block";
-}
-
-function validateCredentials() {
-    var user = document.getElementById("user").value;
-    var passwd = document.getElementById("passwd").value;
-
-    if (!user || !passwd) {
-        alertify.error("Username and Password are required.");
-        return false;
-    }
-
-    $.ajax({
-        type: "POST",
-        url: "login.php",
-        data: {'user': user, 'passwd': passwd},
-        async: false,
-        success: function(response) {
-            hideLoginUi();
-            if (response.substr(0,5) != 'Sorry') {
-                alertify.success("<p style=\"font-size:28px;\"><b>Welcome " + user + "!</b></p>");
-                sleep(4000).then(() => { window.location.reload(); });
-            } else {
-                alertify.error("Sorry, Login Failed!");
-            }
-        },
-        error: function() {
-            hideLoginUi();
-            alertify.error("Error communicating with server for login.");
-        }
-    });
-    return false;
-}
-
-$("#loginlink").click(function(event) {
-    event.preventDefault();
-    clearLoginForm();
-    showLoginUi();
-});
-</script>
 
 <?php include "menu.inc" ?>
 <div id="test_area"></div>

@@ -1,19 +1,54 @@
 <?php
 
 include("session.inc");
+include("security.inc");
 include("user_files/global.inc");
 include("common.inc");
 include("authusers.php");
+include("authini.php");
 
-// --- Configuration ---
-define('LOG_FORMAT_REGEX', '/^(\S+) (\S+) (\S+) \[([^\]]+)\] "([^"]+)" (\d{3}) (\S+) "([^"]*)" "([^"]*)"$/');
-$logTableHeaders = [
-    'Host', 'Identity', 'Auth User', 'Date/Time', 'Request', 'Status', 'Bytes', 'Referer', 'User Agent'
-];
+if (($_SESSION['sm61loggedin'] !== true) || (!get_user_auth("WLOGUSER"))) {
+    die ("<br><h3 class='error-message'>ERROR: You Must login to use the 'Web Access Log' function!</h3>");
+}
 
-// Determine how to read the file (direct or sudo)
-// Set this based on your chosen method (See previous explanation)
-$read_method = 'direct'; // or 'sudo'
+// Safe command execution function
+function safe_exec($command, $args = '') {
+    $escaped_command = escapeshellcmd($command);
+    if (!empty($args)) {
+        $escaped_args = escapeshellarg($args);
+        $full_command = "{$escaped_command} {$escaped_args}";
+    } else {
+        $full_command = $escaped_command;
+    }
+    
+    $output = [];
+    $return_var = 0;
+    exec($full_command . " 2>/dev/null", $output, $return_var);
+    
+    if ($return_var !== 0) {
+        return false;
+    }
+    
+    return implode("\n", $output);
+}
+
+// Validate file path
+function is_safe_file_path($path) {
+    // Only allow specific log files
+    $allowed_paths = [
+        '/var/log/apache2/access.log',
+        '/var/log/httpd/access_log',
+        '/var/log/nginx/access.log'
+    ];
+    
+    return in_array($path, $allowed_paths) && file_exists($path);
+}
+
+$file = $WEB_ACCESS_LOG ?? '/var/log/apache2/access.log';
+
+if (!is_safe_file_path($file)) {
+    die("<h3 class='error-message'>ERROR: Invalid or inaccessible log file path.</h3>");
+}
 
 ?>
 <!DOCTYPE html>
@@ -27,56 +62,49 @@ $read_method = 'direct'; // or 'sudo'
 
 <h1 class="log-viewer-title">Web Server Access Log</h1>
 
+<div class="log-viewer-info">Viewing Log File: <?php echo htmlspecialchars($file); ?></div>
+
 <?php
 // Check if user is logged in and authorized
 if (isset($_SESSION['sm61loggedin']) && $_SESSION['sm61loggedin'] === true && get_user_auth("WLOGUSER")) {
 
     // Check if $WEB_ACCESS_LOG is defined
     if (isset($WEB_ACCESS_LOG) && !empty($WEB_ACCESS_LOG)) {
-        $file = $WEB_ACCESS_LOG;
         $logLines = false; // Initialize logLines variable
 
-        echo '<div class="log-viewer-info">Viewing Log File: ' . htmlspecialchars($file) . '</div>';
-
-        // --- Choose read method ---
-        if ($read_method === 'sudo') {
-            $command = "/usr/bin/cat " . escapeshellarg($file);
-            $sudo_command = "/usr/bin/sudo " . $command;
-            echo "<p><i>Attempting to read via: <code>" . htmlspecialchars($sudo_command) . "</code></i></p>";
-            $logContent = @shell_exec($sudo_command);
-
-            if ($logContent === null || $logContent === false) {
-                echo '<div class="log-viewer-error">ERROR: Failed to execute sudo command or no output received.<br>';
-                echo 'Check web server error logs and sudo configuration (`visudo`).</div>';
-            } elseif (trim($logContent) === '') {
-                echo '<p>Log file appears to be empty (read via sudo).</p>';
+        // Try to read the file directly first
+        if (is_readable($file)) {
+            $logContent = file_get_contents($file);
+            if ($logContent !== false) {
+                $logLines = explode("\n", $logContent);
+                $logLines = array_slice($logLines, -100); // Show last 100 lines
+                $logLines = array_reverse($logLines); // Most recent first
             } else {
-                $logLines = explode("\n", trim($logContent)); // Assign to $logLines
+                $logLines = [];
             }
-        }
-        else { // Assumes 'direct' or any other value
-             if (file_exists($file) && is_readable($file)) {
-                 $logLines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-                 if ($logLines === false) {
-                      echo '<div class="log-viewer-error">Error: Could not read log file content directly, although it seems to exist and be readable. Check permissions further.</div>';
-                 } elseif (empty($logLines)) {
-                      echo '<p>Log file is empty (read directly).</p>';
-                 }
-                 // If $logLines has content, proceed below
-             } else {
-                 echo '<div class="log-viewer-error">ERROR: Log file not found or is not readable by the web server user (' . exec('whoami') . ').<br>';
-                 echo 'Expected location: ' . htmlspecialchars($file) . '<br>';
-                 echo 'Consider adjusting group permissions or using ACLs (safer) or configuring sudo (less safe).</div>';
-             }
+        } else {
+            // Fallback to sudo if direct read fails
+            $sudo_command = "sudo tail -100 " . escapeshellarg($file);
+            echo "<p><i>Attempting to read via: <code>" . htmlspecialchars($sudo_command) . "</code></i></p>";
+            
+            $logContent = safe_exec("sudo", "tail -100 " . escapeshellarg($file));
+            if ($logContent !== false) {
+                $logLines = explode("\n", $logContent);
+                $logLines = array_reverse($logLines); // Most recent first
+            } else {
+                $logLines = [];
+            }
         }
 
         // --- Process and display $logLines if successfully read ---
         if ($logLines !== false && !empty($logLines)) {
             echo '<table class="webacclog-table">';
             echo '<thead><tr>';
-            foreach ($logTableHeaders as $header) {
-                echo '<th>' . htmlspecialchars($header) . '</th>';
-            }
+            echo '<th>Timestamp</th>';
+            echo '<th>IP Address</th>';
+            echo '<th>Request</th>';
+            echo '<th>Status</th>';
+            echo '<th>User Agent</th>';
             echo '</tr></thead>';
             echo '<tbody>';
 
@@ -85,18 +113,23 @@ if (isset($_SESSION['sm61loggedin']) && $_SESSION['sm61loggedin'] === true && ge
                 $trimmedLine = trim($line);
                 if (empty($trimmedLine)) continue;
 
-                if (preg_match(LOG_FORMAT_REGEX, $trimmedLine, $matches)) {
+                // Simple regex to parse common log format
+                if (preg_match('/^(\S+) \S+ \S+ \[([^\]]+)\] "([^"]*)" (\d+) (\d+|-) "([^"]*)" "([^"]*)"$/', $trimmedLine, $matches)) {
                     echo '<tr>';
-                    for ($i = 1; $i < count($matches); $i++) {
-                        echo '<td>' . htmlspecialchars($matches[$i]) . '</td>';
-                    }
+                    echo '<td>' . htmlspecialchars($matches[2]) . '</td>'; // Timestamp
+                    echo '<td>' . htmlspecialchars($matches[1]) . '</td>'; // IP Address
+                    echo '<td>' . htmlspecialchars($matches[3]) . '</td>'; // Request
+                    echo '<td>' . htmlspecialchars($matches[4]) . '</td>'; // Status
+                    echo '<td>' . htmlspecialchars($matches[7]) . '</td>'; // User Agent
                     echo '</tr>';
                 } else {
-                    // Ensure unparsed line text is readable on dark background
-                    echo '<tr><td colspan="' . count($logTableHeaders) . '"><em>[Unparsed Line]:</em> ' . htmlspecialchars($trimmedLine) . '</td></tr>';
+                    // Show unparsed line
+                    echo '<tr><td colspan="5"><em>[Unparsed Line]:</em> ' . htmlspecialchars($trimmedLine) . '</td></tr>';
                 }
             }
             echo '</tbody></table>';
+        } else {
+            echo '<div class="log-viewer-error">No log entries found or unable to read log file.</div>';
         }
     } else {
          echo '<div class="log-viewer-error">ERROR: The `WEB_ACCESS_LOG` path is not defined in `global.inc`.</div>';
