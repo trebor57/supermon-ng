@@ -31,18 +31,6 @@ $BACKGROUND_COLOR = "black";
 // Height of background - matches image height
 $BACKGROUND_HEIGHT = "164px";
 //
-// Maximum number of connections to show per node
-// undefined or "0" = show all
-//$Displayed_Nodes = "0";
-//
-// Show Connection totals (xx of yy) 
-// "0" or undefined = no display, "1" = display
-//$Display_Count = "0";
-//
-// Show ALL or Omit Never Keyed
-// "0" = Omit Never Keyed, "1" or undefined = Show All 
-//$Show_All = "1"
-//
 // Prefix to Name in Page title. Often Supermon
 // "Node# -"
 $SMSERVERNAME = "";
@@ -98,6 +86,8 @@ $DISPLAY_BACKGROUND = "black";
 $SMLOG = "yes";
 
 // Enable or Disable hamclock, set url to use to embed
+// NOTE: Hamclock MUST be configured with a reverse proxy to be displayed properly
+// in Supermon-ng. Direct access to hamclock without a reverse proxy will not work.
 $HAMCLOCK_ENABLED = "False";
 $HAMCLOCK_URL = "";
 
